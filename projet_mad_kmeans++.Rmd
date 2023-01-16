@@ -1,0 +1,353 @@
+---
+title: "Projet MAD 2022 - KMeans++"
+author: "Teddy ALEXANDRE"
+date: "Décembre 2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+library(MASS)
+library(mclust)
+library(caret)
+library(FactoMineR)
+library(factoextra)
+library(corrplot)
+```
+
+L'algorithme de clustering K-moyennes, ou K-Means, est souvent utilisé en apprentissage non supervisé afin d'effectuer des regroupements et de rassembler des données par "similitude". L'objectif de ce projet est d'améliorer l'algorithme de base, détaillé en section 2.1 de l'article scientifique étudié. Pour cela, on propose dans l'exercice 1 une implémentation à la main de l'algorithme appelé "K-Means++", qui est une optimisation de la phase d'initialisation de l'algorithme de base. On se proposera ensuite de comparer les performances entre les deux algorithmes de clustering sur deux datasets, avant de l'étudier avec le célèbre dataset Iris dans le cadre du deuxième exercice, avec de plus une analyse en composantes principales (ACP) pour étudier comment l'information est retranscrite en plus petite dimension.
+
+# Exercice 1
+
+Dans le cadre de l'exercice, $X$ est l'ensemble des points de notre dataset, tous dans l'ensemble $\mathbb{R}^d, d \geq 1$. Notre dataset est donc une matrice avec $n$ lignes (si $n$ est le nombre de points) et $d$ le nombre de coordonnées / la dimension de l'espace.
+
+## Question 1
+
+On définit quelques fonctions utiles à l'implémentation de l'algorithme K-Means :
+```{r, EXO 1 - Q1}
+# Distance euclidienne au carré (norme 2) entre deux points de R^d
+dist_eucli_sq <- function(p1, p2) {
+  return(sum((p2-p1)**2))
+}
+
+# Fonction qui calcule le barycentre / centre de masse associé à un cluster
+barycenter_cluster <- function(cluster) {
+  n = nrow(cluster)  # Nombre de points du cluster
+  d = ncol(cluster)  # Nombre de coordonnées des points
+  barycenter = rep(0, d)  # Vecteur des coordonnées du barycentre
+  for (i in 1:d) {
+    for (j in 1:n) {
+      barycenter[i] = barycenter[i] + cluster[j,i]
+    }
+    barycenter[i] = (1/n)*barycenter[i]
+  }
+  return(barycenter)
+}
+```
+
+On implémente d'abord la partie où l'on optimise l'initialisation des centroïdes initiaux comme indiqué dans l'article :
+
+```{r}
+# Initialisation de l'algo KMeans++ (étape 1)
+# X est la matrice des points (n est le nombre de points, d est la dimension)
+# K est un entier quelconque (le nombre de clusters)
+# On renvoie la matrice des K centres initiaux avec leurs coordonnées
+KMeansplusplus_init <- function(X, K) {
+  n = nrow(X)
+  d = ncol(X)
+  squared_dist = rep(NA,n) # vector of the squared distances of every point to the closest center
+  centers = matrix(NA, nrow = K, ncol = d) # matrix of centers, K rows and d columns
+  
+  ### Step 1a
+  centers[1,] = X[sample(1:n, size = 1),] # first center, chosen uniformly in the set of the points
+  
+  k = 1
+  while (k < K) {
+    ### Step 1b and 1c
+    k = k + 1
+    # Initialization of the K-1 centers left
+    # We compute all the squared distances to build a probability distribution
+    for (i in 1:n) {
+      x = X[i,]
+      dist_min_x_sq = Inf
+      for (j in 1:(k-1)) {
+        c = centers[j,]
+        dist_cur_sq = dist_eucli_sq(x, c) # Distance entre x et tous les centres calculés
+        if (dist_cur_sq < dist_min_x_sq)
+          dist_min_x_sq = dist_cur_sq
+      }
+      squared_dist[i] = dist_min_x_sq
+    }
+    
+    # We build our probability distribution
+    probs = rep(NA,n)
+    for (i in 1:n) 
+      probs[i] = squared_dist[i] / sum(squared_dist)
+    
+    # The cumulative probability is computed to help us choose our next center
+    cumulative_probs = cumsum(probs)
+    
+    # We choose our next center : we generate a random value between 0 and 1
+    prob = runif(1, min = 0, max = 1)
+    j = 1
+    # We then consider the smallest value of j such that prob is greater than the cumulative probability calculated
+    while (j < n && cumulative_probs[j] < prob) 
+      j = j + 1
+    # We update our list of centers
+    centers[k,] = X[j,]
+  }
+  return(centers)
+}
+```
+
+On peut donc implémenter le reste de l'algorithme K-Means à la main :
+
+```{r}
+# Fonction qui réalise l'algo KMeans à partir de l'initialisation
+KMeansplusplus <- function(X, K) {
+  ### Steps 2 to 4
+  n = nrow(X)
+  d = ncol(X)
+  centers = KMeansplusplus_init(X, K)
+  partition_old = matrix(1,n,K)  # Partition matrix associated with the clusters
+  partition_new = matrix(0,n,K)
+  
+  i = 1
+  # Stopping criteria : the centers are the same after an iteration
+  while(i < 10 && !identical(partition_old, partition_new)) {
+    partiton_old = partition_new
+    partition_new = matrix(0,n,K)
+    ### We update the clusters : step 2
+    for (i in 1:n) {
+      x = X[i,]
+      dist_min = Inf
+      index_closest_center = 1
+      for (c in 1:K) {
+        # We compare the distance to every center with the minimum found
+        dist_cur = dist_eucli_sq(x, centers[c,])
+        if (dist_cur < dist_min) {
+          dist_min = dist_cur
+          index_closest_center = c
+        }
+      }
+      # We assign the i-th point to the closest center found
+      partition_new[i,index_closest_center] = 1
+    }
+    ### Then update the barycenters : step 3
+    for (k in 1:K) {
+      cluster_k = X[which(partition_new[,k] == 1),]
+      centers[k,] = barycenter_cluster(cluster_k)
+    }
+    i = i + 1
+  }
+  return(centers)
+}
+```
+
+L'algorithme KMeans++ a donc une complexité plus importante que l'algorithme de base en ce qui concerne **l'initialisation**, mais **converge plus rapidement** que l'algorithme de base. On va donc comparer les performances entre les deux algorithmes avec deux datasets construits à la main.
+
+## Question 2
+
+On construit le dataset NORM-10 comme décrit dans l'énoncé : on choisit de représenter 1000 points au total (pour plus de rapidité d'exécution), dans $\mathbb{R}^d, (d = 5)$, avec $m = 10$ centres dont les coordonnées sont générées chacune dans $[0, 500]$. On s'aide alors d'une loi normale multivariée, de moyenne les centres initiaux et de variance l'identité de taille $d$, pour créer le "bruit" autour de chacun des $m$ centres.
+
+```{r, EXO 1 - Q2, NORM-10}
+N = 1000
+d = 5
+m = 10
+
+# 10 centres dans R^5
+real_centers10 = matrix(data = NA, nrow = m, ncol = d)
+for (i in 1:m) {
+  # Pour chaque centre, on simule d lois uniformes dans [0, 500]
+    real_centers10[i,] = runif(d, min = 0, max = 500)
+}
+real_centers10
+
+norm10points = c()
+for (i in 1:m) {
+  # Pour chaque centre, on génère N/m points autour de ce centre
+  norm10points = rbind(norm10points, mvrnorm(N/m, real_centers10[i,], Sigma = diag(d)))
+}
+
+head(norm10points, 10)
+```
+De même pour NORM-25, on prend cette fois $d = 15$ et $m = 25$ centres.
+
+```{r, EXO 1 - Q2, NORM-25}
+N = 1000
+d = 15
+m = 25
+
+# 25 centres dans R^15
+real_centers25 = matrix(data = NA, nrow = m, ncol = d)
+for (i in 1:m) {
+  # Pour chaque centre, on fait d lois uniformes dans [0, 500]
+    real_centers25[i,] = runif(d, min = 0, max = 500)
+}
+
+norm25points = c()
+for (i in 1:m) {
+  norm25points = rbind(norm25points, mvrnorm(N/m, real_centers25[i,], Sigma = diag(d)))
+}
+
+real_centers25
+head(norm25points,10)
+```
+
+## Question 3
+
+On utilise cette fois la méthode KMeans fournie de base dans R :
+
+```{r, EXO 1 - Q3}
+
+# Determines and returns the closest center
+closest_center <- function(pt, centers) {
+  center = rep(0,ncol(centers))
+  dist_min = Inf
+  for (i in 1:nrow(centers)) {
+    dist_cur = dist_eucli_sq(pt, centers[i,])
+    if (dist_cur < dist_min) {
+      dist_min = dist_cur
+      center = centers[i,]
+    }
+  }
+  return(center)
+}
+
+# Calculates the potential associated to the data set when clusters are done
+potential <- function(X, centers) {
+  res = 0
+  for (i in 1:nrow(X)) {
+    res = res + dist_eucli_sq(X[i,], closest_center(X[i,], centers))
+  }
+  return(res)
+}
+```
+
+```{r}
+nbpoints1 = nrow(norm10points)
+# Comparison between KMeans and KMeans++ with Norm-10
+
+time_kmeans_begin = Sys.time()
+res = kmeans(x = norm10points, iter.max = 10, centers = 10)
+time_kmeans_end = Sys.time()
+
+print("Temps d'exécution KMeans avec Norm-10, 10 centres :")
+print(time_kmeans_end - time_kmeans_begin)
+
+time_kmeanspp_begin = Sys.time()
+centers10 = KMeansplusplus(norm10points, 10)
+time_kmeanspp_end = Sys.time()
+
+print("Temps d'exécution KMeans++ avec Norm-10, 10 centres :")
+print(time_kmeanspp_end - time_kmeanspp_begin)
+
+print("Potentiel moyen KMeans :")
+res$tot.withinss/nbpoints1
+print("Potentiel moyen KMeans++ :")
+potential(norm10points, centers10)/nbpoints1
+```
+
+```{r}
+nbpoints2 = nrow(norm25points)
+# Same with Norm-25
+
+time_kmeans_begin = Sys.time()
+res2 = kmeans(x = norm25points, iter.max = 10, centers = 25)
+time_kmeans_end = Sys.time()
+
+print("Temps d'exécution KMeans avec Norm-25, 25 centres :")
+print(time_kmeans_end - time_kmeans_begin)
+
+time_kmeanspp_begin = Sys.time()
+centers25 = KMeansplusplus(norm25points, 25)
+time_kmeanspp_end = Sys.time()
+
+print("Temps d'exécution KMeans++ avec Norm-25, 25 centres :")
+print(time_kmeanspp_end - time_kmeanspp_begin)
+
+print("Potentiel moyen KMeans :")
+res2$tot.withinss/nbpoints2
+print("Potentiel moyen KMeans++ :")
+potential(norm25points, centers25)/nbpoints2
+```
+Le potentiel associé au KMeans++ est donc significativement amélioré par rapport à celui de base. Néanmoins on observe dans les deux cas un temps d'exécution un peu plus important mais toujours très honnête? L'algorithme KMeans++ constitue donc une bonne amélioration de l'algorithme de base, grâce à une phase d'initialisation améliorée par rapport à l'algorithme de base.
+
+
+# Exercice 2
+
+On importe le data set *Iris*, et on met en place les méthodes KMeans, KMeans++ et MClust :
+
+## Question 1
+
+```{r, EXO 2 - Q1}
+# Data visualization and preparation
+data(iris)
+head(iris)
+summary(iris)
+iris_quantitative = as.matrix(iris[,-5])  # We remove the last column, not quantitative
+K = 3   # On choisit K = 3
+
+# KMeans++
+time_kmeanspp_begin = Sys.time()
+centers_iris_kmpp = KMeansplusplus(iris_quantitative, K)
+time_kmeanspp_end = Sys.time()
+print("Temps d'exécution KMeans++")
+print(time_kmeanspp_end - time_kmeanspp_begin)
+
+print("KMeans++ : Centres")
+centers_iris_kmpp
+
+print("Potentiel KMeans++ sur les données iris : K = 3")
+print(potential(iris_quantitative, centers_iris_kmpp))
+
+# KMeans
+time_kmeans_begin = Sys.time()
+res_km = kmeans(x = iris_quantitative, centers = K)
+time_kmeans_end = Sys.time()
+print("Temps d'exécution KMeans")
+print(time_kmeans_end - time_kmeans_begin)
+
+print("KMeans : centres")
+res_km$centers
+
+print("Potentiel KMeans sur les données iris : K = 3")
+res_km$tot.withinss
+
+# MClust
+centers_iris_mclust = Mclust(data = iris_quantitative, G = K)
+summary(centers_iris_mclust, parameters = TRUE)
+plot(centers_iris_mclust, what="classification")
+bic_iris = mclustBIC(iris_quantitative)
+plot(bic_iris)
+
+```
+Les valeurs obtenues pour $\phi$ sont relativement proches les unes des autres. Le graphe du BIC en fonction du nombre de composantes montre que le choix optimal du nombre de composantes (donc de clusters) se situe entre 2 et 3 (on veut maximiser le BIC). On a pris ici la valeur 3 pour y visualiser 3 clusters dans le cadre d'une analyse en composantes principales en deux dimensions.
+
+## Question 2
+
+La matrice de corrélation :
+
+```{r, EXO 2 - Q2}
+print(cor(iris_quantitative))
+corrplot(cor(iris_quantitative))
+```
+
+La mise en place de l'ACP :
+
+```{r}
+iris.pca = PCA(iris_quantitative, graph = FALSE)
+iris.pca$eig
+summary(iris.pca)
+fviz_eig(iris.pca, addlabels = TRUE)
+fviz_pca_biplot(iris.pca, col.ind = iris$Species, addEllipses = TRUE, label = "var", col.var = "black")
+```
+
+## Question 3
+
+En analysant les résultats obtenus, on s'aperçoit que la première composante résume une bonne partie de l'information de base sur le data set *Iris* (pourcentage de variance à 73%). On remarque également avec le graphe que les variables *Petal.Length* et *Petal.Width* sont très fortement corrélées sur la première composante, ce qui est cohérent avec ce qui est résumé dans la matrice de corrélation (corrélation égale à environ 0.96, très proche de 1), et que de même, *Sepal.Length* est fortement corrélée aux deux dernières variables (corrélation entre 0.8 et 0.9). La deuxième composante résume globalement l'information sur la variable restante, *Sepal.Width* (23% de la variance totale), qui est moins corrélée aux trois autres (information qui se retrouve dans le corrplot effectué ci-dessus et dans la matrice de corrélation). Les deux composantes à elles seules résument la quasi-totalité de l'information (pourcentage de variance cumulée proche de 96% !).
+
+La première composante est positivement corrélée avec *Sepal.Length*, *Petal.Length* et *Petal.Width*, et négativement corrélée avec *Sepal.Width*. La deuxième composante est positivement corrélée avec cette dernière.

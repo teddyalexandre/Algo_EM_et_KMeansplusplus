@@ -1,0 +1,151 @@
+---
+title: "TD noté sur l'algorithme EM"
+author: "Teddy ALEXANDRE"
+date: "Décembre 2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 60),tidy=TRUE)
+```
+
+# Simulation
+
+
+```{r}
+lambdas = c(3,15)
+pis = c(0.4,0.6)
+N = 1000
+```
+
+## Question 1
+
+On se sert de la fonction *rpois* pour générer les échantillons.
+```{r, Q1}
+echpois1 <- rpois(n = 100, lambda = lambdas[1])
+echpois1
+```
+## Question 2
+
+Idem :
+```{r, Q2}
+echpois2 <- rpois(n = 200, lambda = lambdas[2])
+echpois2
+```
+## Question 3
+
+On combine la fonction *rep* avec la création d'un vecteur avec *c()* :
+```{r, Q3}
+int_vec <- c(rep(1, 100),rep(2,200))
+int_vec
+```
+## Question 4
+On simule $N = 300$ valeurs dans $\{1,2\}$ avec une probabilité $\pi_1 = 0.4$ d'obtenir la valeur $1$, et, en fonction des valeurs obtenues, générer l'une des deux lois de Poisson issu du mélange à réaliser. On affiche ensuite le tout sous la forme d'un histogramme, avec la fonction de densité associée à l'échantillon :
+
+```{r, Q4}
+# Poisson mixture with 2 components
+z = sample(1:2, size = N, replace = TRUE, prob = pis)
+poisson_mixture = rep(NA, N)
+for (i in 1:N)
+  poisson_mixture[i] = rpois(1, lambdas[z[i]])
+
+# Histogram + density
+hist(poisson_mixture, breaks=50, prob=TRUE, main = "Mélange de deux lois de Poisson")
+lines(density(poisson_mixture), col="red", lwd = 3)
+```
+
+
+# Algorithme EM - Mélange de Poisson à K composantes
+
+Les calculs et les notations utilisées ci-dessous sont détaillés sur une feuille jointe en annexe, dans le cas d'un mélange de Poisson à K composantes.
+Les questions 1 à 4 sont traités d'une seule traite, le tout dans une seule fonction. On définit quelques fonctions préliminaires :
+
+```{r, Fonctions utiles}
+norme_deux_vec_carre <- function(u) {
+  res = 0
+  for (i in 1:length(u)) {
+    res = res + (u[i])^2
+  }
+  res
+}
+
+critere_arret <- function(u,v) {
+  res = norme_deux_vec_carre(u-v) / norme_deux_vec_carre(u)
+  response = FALSE
+  if (res <= 1e-9) {
+    response = TRUE
+  }
+  response
+}
+```
+
+## L'algorithme EM implémenté (Questions 1 à 4):
+
+```{r, Q1 to Q4}
+
+EM_algorithm_poisson <- function(X, K) {
+  # Q1 - Phase d'initialisation des paramètres
+  N = length(X)
+  probas_k = rep(0,K)
+  lambda_k = rep(0,K)
+  for (k in 1:K) 
+    lambda_k[k] = sample(1:15, size = 1)
+  
+  probas_k_old = probas_k
+  lambda_k_old = lambda_k
+  
+  for (k in 1:K) {
+    probas_k[k] = 1/K
+    lambda_k[k] = sample(1:15, size = 1)
+  }
+  theta_old_k = c(probas_k_old, lambda_k_old)
+  theta_k = c(probas_k, lambda_k)
+  
+  # Tant que l'on n'a pas atteint le critère d'arrêt
+  while (!critere_arret(theta_old_k, theta_k)) {
+    
+    # Q2 - Etape "E" : Calcul des t_ik
+    T = matrix(rep(0,N*K), nrow = N, ncol = K)
+    for (i in 1:N) {
+      for (k in 1:K) {
+        T[i,k] = probas_k[k]*dpois(X[i], lambda_k[k]) / sum(probas_k * dpois(X[i], lambda_k))
+      }
+    }
+    
+    # Q3 - Etape "M" : Calcul des nouveaux probas_k et lambda_k
+    for (k in 1:K) {
+      sum_i_tik = 0
+      sum_i_tik_xi = 0
+      sum_i_tiK_xi = 0
+      for (i in 1:N) {
+        sum_i_tik = sum_i_tik + T[i,k]
+        sum_i_tik_xi = sum_i_tik_xi + T[i,k]*X[i]
+        sum_i_tiK_xi = sum_i_tiK_xi + T[i,K]*X[i]
+      }
+      probas_k[k] = sum_i_tik / N
+      lambda_k[k] = sum_i_tik_xi / sum_i_tik
+    }
+    
+    probas_k[K] = 1 - sum(probas_k[1:K-1])
+    theta_old_k = theta_k
+    theta_k = c(probas_k,lambda_k)
+  }
+  theta_k
+}
+
+# Q4 - Test avec les valeurs simulées plus haut
+for (i in 1:5)
+  print(EM_algorithm_poisson(poisson_mixture, 2))
+```
+
+*Conclusion*
+
+L'algorithme EM implémenté est fonctionnel, on obtient une assez bonne estimation des hyperparamètres modélisés ($\pi_1 = 0.4, \pi_2 = 0.6, \lambda_1 = 3, \lambda_2 = 15$ environ). On effectue plusieurs répétitions pour s'en convaincre. On retrouve donc à peu près les valeurs fixées dans la partie "Simulation". On sent néanmoins que les valeurs obtenues par estimation peuvent encore se rapprocher des vraies valeurs. Les valeurs obtenues convergent lorsque $N$ augmente (car échantillon plus grand). Les valeurs ci-dessous sont obtenues pour $N = 3000$.
+
+```{r, out.width = "400px", out.height="400px", fig.align='center', echo=FALSE}
+knitr::include_graphics("/home/talexandre/Bureau/ANDO/TP noté/em_3000.png")
+```
+
